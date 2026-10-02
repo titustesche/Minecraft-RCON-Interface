@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Service;
+import org.springframework.util.FileSystemUtils;
+import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.BufferedOutputStream;
@@ -30,6 +32,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -42,7 +46,8 @@ import java.util.zip.ZipOutputStream;
 /**
  * Archives a whole server directory to backups/&lt;id&gt;/&lt;id&gt;-yyyyMMdd-HHmmss.zip|.tar.gz.
  * A running server is told to flush and pause saving while the archive is written.
- * Backups can be pushed to Simplyfile right away or later.
+ * Backups can be pushed to Simplyfile right away or later, uploaded from outside and
+ * restored with one click.
  */
 @Service
 public class BackupService implements DisposableBean {
@@ -59,6 +64,7 @@ public class BackupService implements DisposableBean {
     private final ObjectMapper mapper;
     private final Path root;
     private final Set<String> running = ConcurrentHashMap.newKeySet();
+    private final Map<String, RestoreStatus> restores = new ConcurrentHashMap<>();
     private final ExecutorService background = Executors.newVirtualThreadPerTaskExecutor();
 
     public BackupService(ServerService servers, ServerProcessManager processes, SimplyfileClient simplyfile,
@@ -102,13 +108,13 @@ public class BackupService implements DisposableBean {
         if (uploadToSimplyfile && !simplyfile.enabled()) {
             throw ApiException.badRequest("Simplyfile ist nicht konfiguriert (simplycraft.simplyfile.url)");
         }
-        if (!running.add(id)) throw ApiException.conflict("Für diesen Server läuft bereits ein Backup");
+        if (!running.add(id)) throw ApiException.conflict("Für diesen Server läuft bereits ein Backup oder eine Wiederherstellung");
 
-        String name = id + "-" + LocalDateTime.now().format(STAMP) + format.extension();
+        String name;
         Path part;
         try {
             Path dir = Files.createDirectories(dir(id));
-            if (Files.exists(dir.resolve(name))) throw ApiException.conflict("Backup existiert bereits, bitte kurz warten");
+            name = newName(id, format);
             part = dir.resolve(name + PART);
             Files.createFile(part);
         } catch (IOException | RuntimeException e) {
@@ -173,13 +179,7 @@ public class BackupService implements DisposableBean {
                 }
             }
 
-            Path source = servers.dir(id);
-            try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(part))) {
-                if (format == BackupFormat.ZIP) zip(source, id, out);
-                else tarGz(source, id, out);
-            }
-            Path target = part.resolveSibling(name);
-            Files.move(part, target, StandardCopyOption.ATOMIC_MOVE);
+            Path target = writeArchive(id, format, part, name);
             runtime.system("Backup " + name + " fertig (" + Files.size(target) / (1024 * 1024) + " MB)");
 
             if (upload) {
@@ -200,6 +200,134 @@ public class BackupService implements DisposableBean {
                 } catch (ApiException ignored) {
                 }
             }
+        }
+    }
+
+    private Path writeArchive(String id, BackupFormat format, Path part, String name) throws IOException {
+        Path source = servers.dir(id);
+        try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(part))) {
+            if (format == BackupFormat.ZIP) zip(source, id, out);
+            else tarGz(source, id, out);
+        }
+        Path target = part.resolveSibling(name);
+        Files.move(part, target, StandardCopyOption.ATOMIC_MOVE);
+        return target;
+    }
+
+    private String newName(String id, BackupFormat format) {
+        String base = id + "-" + LocalDateTime.now().format(STAMP);
+        String name = base + format.extension();
+        // Two backups within one second (e.g. safety backup right after a backup): wait for the next one
+        while (Files.exists(dir(id).resolve(name)) || Files.exists(dir(id).resolve(name + PART))) {
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw ApiException.conflict("Abgebrochen");
+            }
+            name = id + "-" + LocalDateTime.now().format(STAMP) + format.extension();
+        }
+        return name;
+    }
+
+    // --- restore & import ---------------------------------------------------------------
+
+    /**
+     * Replaces the server directory with the content of a backup, in the background.
+     * The server must be stopped and stays locked until the restore is finished. With
+     * safetyBackup the current state is archived first.
+     */
+    public RestoreStatus restore(String id, String name, boolean safetyBackup) {
+        Path archive = file(id, name);
+        if (!running.add(id)) throw ApiException.conflict("Für diesen Server läuft bereits ein Backup oder eine Wiederherstellung");
+        try {
+            processes.lock(id, "Der Server wird gerade aus einem Backup wiederhergestellt");
+        } catch (RuntimeException e) {
+            running.remove(id);
+            throw e;
+        }
+
+        RestoreStatus status = new RestoreStatus(name, "RUNNING", null, null, Instant.now());
+        restores.put(id, status);
+        background.submit(() -> {
+            try {
+                restoreNow(id, name, archive, safetyBackup);
+            } finally {
+                processes.unlock(id);
+                running.remove(id);
+            }
+        });
+        return status;
+    }
+
+    public RestoreStatus restoreStatus(String id) {
+        servers.get(id);
+        return restores.get(id);
+    }
+
+    private void restoreNow(String id, String name, Path archive, boolean safetyBackup) {
+        ServerRuntime runtime = processes.runtime(id);
+        Path staging = servers.stagingDir(id);
+        String safety = null;
+        try {
+            if (safetyBackup) {
+                safety = newName(id, BackupFormat.ZIP);
+                runtime.system("Sichere aktuellen Stand als " + safety);
+                Files.createDirectories(dir(id));
+                writeArchive(id, BackupFormat.ZIP, dir(id).resolve(safety + PART), safety);
+            }
+
+            runtime.system("Lade Backup " + name);
+            FileSystemUtils.deleteRecursively(staging);
+            ArchiveExtractor.extract(archive, BackupFormat.of(name), staging);
+            servers.replaceWith(id, staging);
+
+            restores.put(id, new RestoreStatus(name, "DONE", safety, null, Instant.now()));
+            runtime.system("Backup " + name + " wurde geladen");
+        } catch (Exception e) {
+            log.error("Restore of {} failed", name, e);
+            restores.put(id, new RestoreStatus(name, "FAILED", safety, e.getMessage(), Instant.now()));
+            runtime.system("Wiederherstellung fehlgeschlagen, der bisherige Stand bleibt erhalten: " + e.getMessage());
+            try {
+                if (safety != null) Files.deleteIfExists(dir(id).resolve(safety + PART));
+            } catch (IOException ignored) {
+            }
+        } finally {
+            try {
+                FileSystemUtils.deleteRecursively(staging);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    /** Adds an archive from outside (e.g. downloaded from Simplyfile) to the backups of a server */
+    public BackupInfo importArchive(String id, MultipartFile file) {
+        servers.get(id);
+        if (file == null || file.isEmpty()) throw ApiException.badRequest("Datei fehlt");
+        String original = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
+        BackupFormat format;
+        if (original.endsWith(".zip")) format = BackupFormat.ZIP;
+        else if (original.endsWith(".tar.gz") || original.endsWith(".tgz")) format = BackupFormat.TAR_GZ;
+        else throw ApiException.badRequest("Nur .zip- und .tar.gz-Archive können als Backup hochgeladen werden");
+
+        try {
+            Files.createDirectories(dir(id));
+            String name = newName(id, format);
+            Path part = dir(id).resolve(name + PART);
+            try (InputStream in = file.getInputStream()) {
+                Files.copy(in, part, StandardCopyOption.REPLACE_EXISTING);
+            }
+            try {
+                if (ArchiveExtractor.entries(part, format).isEmpty()) throw ApiException.badRequest("Das Archiv ist leer");
+            } catch (RuntimeException e) {
+                Files.deleteIfExists(part);
+                throw e;
+            }
+            Files.move(part, dir(id).resolve(name), StandardCopyOption.ATOMIC_MOVE);
+            processes.runtime(id).system("Backup " + name + " hochgeladen (" + file.getOriginalFilename() + ")");
+            return info(id, name);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 

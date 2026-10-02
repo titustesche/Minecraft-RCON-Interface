@@ -26,6 +26,11 @@ Gleicher Stack wie Simplyfile: Spring Boot 4.1, Java 21, Maven, Vanilla-JS-Front
 - **Backups** als `.zip` oder `.tar.gz` nach `backups/<id>/`; läuft der Server, wird vorher
   `save-off` + `save-all flush` gesendet und danach `save-on`. Direkt oder nachträglich nach
   Simplyfile hochladbar, der Link landet in der Backup-Liste
+- **Backup laden** per Knopfdruck (Server muss gestoppt sein): Der aktuelle Stand wird auf Wunsch
+  vorher selbst gesichert, das Archiv wird erst in einen Zwischenordner entpackt und dann gegen den
+  Serverordner getauscht – schlägt etwas fehl, bleibt der alte Stand erhalten. Eigene Archive
+  (z. B. aus Simplyfile heruntergeladen oder ein bestehender Serverordner als `.zip`/`.tar.gz`)
+  lassen sich hochladen und genauso laden
 
 ## Starten
 
@@ -89,6 +94,9 @@ Alle Werte stehen in `application.properties` und lassen sich per Umgebungsvaria
 | GET/POST | `/api/servers/{id}/backups` | Backups / neues Backup (`format`, `uploadToSimplyfile`) |
 | GET/DELETE | `/api/servers/{id}/backups/{name}` | herunterladen, löschen |
 | POST | `/api/servers/{id}/backups/{name}/simplyfile` | nach Simplyfile hochladen |
+| POST | `/api/servers/{id}/backups/{name}/restore` | Backup laden (`safetyBackup`, Standard `true`) |
+| GET | `/api/servers/{id}/restore` | Status der letzten Wiederherstellung |
+| POST | `/api/servers/{id}/backups/upload` | eigenes Archiv als Backup hochladen (`file`) |
 
 ## Tests
 

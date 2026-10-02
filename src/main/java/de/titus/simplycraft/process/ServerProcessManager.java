@@ -37,6 +37,8 @@ public class ServerProcessManager implements DisposableBean {
     private final ServerService servers;
     private final SimplycraftProperties properties;
     private final Map<String, ServerRuntime> runtimes = new ConcurrentHashMap<>();
+    /** Servers that must not start, with the reason (e.g. a backup is being restored) */
+    private final Map<String, String> locks = new ConcurrentHashMap<>();
     private final ExecutorService background = Executors.newVirtualThreadPerTaskExecutor();
 
     public ServerProcessManager(ServerService servers, SimplycraftProperties properties) {
@@ -60,6 +62,21 @@ public class ServerProcessManager implements DisposableBean {
 
     public void requireStopped(String id, String action) {
         if (isRunning(id)) throw ApiException.conflict("Bitte den Server stoppen, bevor du " + action);
+        String lock = locks.get(id);
+        if (lock != null) throw ApiException.conflict(lock);
+    }
+
+    /** Blocks starting (and other changes) until unlock; fails if the server runs or is already locked */
+    public void lock(String id, String reason) {
+        ServerRuntime runtime = runtime(id);
+        synchronized (runtime) {
+            requireStopped(id, "fortfährst");
+            locks.put(id, reason);
+        }
+    }
+
+    public void unlock(String id) {
+        locks.remove(id);
     }
 
     public ServerStatus start(String id) {
@@ -67,6 +84,8 @@ public class ServerProcessManager implements DisposableBean {
         ServerRuntime runtime = runtime(id);
         synchronized (runtime) {
             if (runtime.isRunning()) throw ApiException.conflict("Der Server läuft bereits");
+            String lock = locks.get(id);
+            if (lock != null) throw ApiException.conflict(lock);
             if (!config.isEulaAccepted()) {
                 throw ApiException.badRequest("Bitte akzeptiere zuerst die Minecraft-EULA in den Einstellungen des Servers");
             }

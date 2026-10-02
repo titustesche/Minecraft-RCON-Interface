@@ -1,13 +1,15 @@
 import {Api, enc} from "../api.js";
-import {busy, clear, confirm, Format, h, icon, iconButton, Popup} from "../ui.js";
+import {busy, clear, confirm, dropzone, Format, h, icon, iconButton, isRunning, modal, Popup} from "../ui.js";
 
 export function BackupsView({app, main}) {
     const id = app.current.config.id;
     const base = `/api/servers/${enc(id)}/backups`;
     const simplyfile = app.info.simplyfileEnabled;
     let poll = null;
+    let restorePoll = null;
     let disposed = false;
-    let count, list, format, upload, createButton;
+    let restoring = null;
+    let count, list, format, upload, createButton, restoreBanner, importProgress;
 
     clear(main,
         h("div", {class: "page-head"},
@@ -29,7 +31,16 @@ export function BackupsView({app, main}) {
                 createButton = h("button", {type: "button", class: "pill-button primary", style: "margin-left: auto", onClick: create},
                     icon("backup"), "Backup erstellen")),
             simplyfile ? null : h("p", {class: "muted small"}, "Simplyfile ist nicht verbunden. Setze SIMPLYCRAFT_SIMPLYFILE_URL, um Backups dort abzulegen.")),
-        h("div", {class: "row-list", ref: el => list = el})
+        h("div", {class: "section hidden", role: "status", ref: el => restoreBanner = el}),
+        h("div", {class: "row-list", ref: el => list = el}),
+        dropzone({
+            title: "Backup hochladen",
+            hint: ".zip oder .tar.gz, z. B. aus Simplyfile heruntergeladen · erscheint danach in der Liste",
+            accept: ".zip,.tar.gz,.tgz",
+            multiple: false,
+            onFiles: ([file]) => importArchive(file),
+        }),
+        h("div", {class: "progress-line hidden", ref: el => importProgress = el}, h("div"))
     );
 
     async function load() {
@@ -62,6 +73,7 @@ export function BackupsView({app, main}) {
                 h("p", {class: "row-title"}, backup.name),
                 h("p", {class: "row-meta"}, meta.join(" · "), " ", simplyfileBadge(backup))),
             h("div", {class: "row-actions"}, backup.inProgress ? null : [
+                iconButton("restore", "Backup laden", () => restore(backup), {disabled: restoring != null}),
                 h("a", {class: "icon-button", href: Api.url(`${base}/${enc(backup.name)}`), download: backup.name, title: "Herunterladen", "aria-label": "Herunterladen"}, icon("download", 16)),
                 simplyfile ? iconButton("cloud", "In Simplyfile sichern", e => busy(e.currentTarget, async () => {
                     await Api.post(`${base}/${enc(backup.name)}/simplyfile`);
@@ -85,6 +97,78 @@ export function BackupsView({app, main}) {
         return h("a", {class: "badge tertiary-text", style: "color: var(--tertiary-accent)", href: upload.url, target: "_blank", rel: "noopener"}, icon("check", 12), "in Simplyfile");
     }
 
+    // --- restore -----------------------------------------------------------------------
+
+    async function restore(backup) {
+        if (isRunning(app.status?.state)) {
+            return Popup.warn("Server läuft", "Stoppe den Server, bevor du ein Backup lädst.");
+        }
+        let safety;
+        const ok = await modal("Backup laden", h("div", {style: "display: flex; flex-direction: column; gap: 0.75rem"},
+            h("p", {style: "margin: 0"}, `Der Serverordner wird komplett durch ${backup.name} ersetzt (Welten, Mods, Einstellungen).`),
+            h("label", {class: "check"},
+                h("input", {type: "checkbox", checked: true, ref: el => safety = el}),
+                "Aktuellen Stand vorher als Backup sichern")), [
+            {label: "Abbrechen"},
+            {label: "Backup laden", primary: true, value: () => ({safetyBackup: safety.checked})},
+        ]);
+        if (!ok) return;
+        try {
+            restoring = await Api.post(`${base}/${enc(backup.name)}/restore`, ok);
+            renderRestore();
+            await load();
+            watchRestore();
+        } catch (e) {
+            Popup.error("Laden nicht möglich", e.message);
+        }
+    }
+
+    function renderRestore() {
+        restoreBanner.classList.toggle("hidden", !restoring);
+        if (!restoring) return;
+        clear(restoreBanner, h("div", {class: "button-row"},
+            h("span", {class: "spinner"}),
+            h("span", null, `Backup ${restoring.backup} wird geladen … der Server ist solange gesperrt.`)));
+    }
+
+    function watchRestore() {
+        clearTimeout(restorePoll);
+        restorePoll = setTimeout(async () => {
+            let status = null;
+            try {
+                status = await Api.get(`/api/servers/${enc(id)}/restore`);
+            } catch { /* try again */ }
+            if (disposed) return;
+            if (status?.status === "RUNNING" || !status) return watchRestore();
+            restoring = null;
+            renderRestore();
+            if (status.status === "DONE") {
+                Popup.info("Backup geladen", status.backup + (status.safetyBackup ? ` · vorheriger Stand: ${status.safetyBackup}` : ""), 6);
+                // Settings, jar and mods may have changed with the restored directory
+                app.setCurrent(await Api.get(`/api/servers/${enc(id)}`));
+            } else {
+                Popup.error("Wiederherstellung fehlgeschlagen", status.error ?? "Unbekannter Fehler");
+            }
+            await load();
+        }, 1500);
+    }
+
+    async function importArchive(file) {
+        importProgress.classList.remove("hidden");
+        const form = new FormData();
+        form.append("file", file);
+        try {
+            const backup = await Api.upload(`${base}/upload`, form, p => importProgress.firstElementChild.style.width = `${Math.round(p * 100)}%`);
+            Popup.info("Backup hochgeladen", backup.name);
+            await load();
+        } catch (e) {
+            Popup.error("Upload fehlgeschlagen", e.message);
+        } finally {
+            importProgress.classList.add("hidden");
+            importProgress.firstElementChild.style.width = "0";
+        }
+    }
+
     async function create() {
         await busy(createButton, async () => {
             await Api.post(base, {format: format.value, uploadToSimplyfile: upload.checked});
@@ -94,8 +178,16 @@ export function BackupsView({app, main}) {
     }
 
     load();
+    // A restore started earlier (or in another tab) is still running
+    Api.get(`/api/servers/${enc(id)}/restore`).then(status => {
+        if (disposed || status?.status !== "RUNNING") return;
+        restoring = status;
+        renderRestore();
+        watchRestore();
+    }).catch(() => {});
     return () => {
         disposed = true;
         clearTimeout(poll);
+        clearTimeout(restorePoll);
     };
 }

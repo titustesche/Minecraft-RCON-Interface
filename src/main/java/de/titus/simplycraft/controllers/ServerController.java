@@ -1,5 +1,7 @@
 package de.titus.simplycraft.controllers;
 
+import de.titus.simplycraft.backup.BackupService;
+import de.titus.simplycraft.backup.RestoreStatus;
 import de.titus.simplycraft.jar.JarService;
 import de.titus.simplycraft.jar.MinecraftVersion;
 import de.titus.simplycraft.jar.ServerType;
@@ -31,12 +33,15 @@ public class ServerController {
     private final ServerProcessManager processes;
     private final JarService jars;
     private final VersionCatalog versions;
+    private final BackupService backups;
 
-    public ServerController(ServerService servers, ServerProcessManager processes, JarService jars, VersionCatalog versions) {
+    public ServerController(ServerService servers, ServerProcessManager processes, JarService jars, VersionCatalog versions,
+                            BackupService backups) {
         this.servers = servers;
         this.processes = processes;
         this.jars = jars;
         this.versions = versions;
+        this.backups = backups;
     }
 
     public record ServerView(ServerConfig config, ServerStatus status, boolean jarInstalled) {
@@ -78,6 +83,13 @@ public class ServerController {
         processes.requireStopped(id, "ihn löschst");
         servers.delete(id);
         return ResponseEntity.noContent().build();
+    }
+
+    /** State of the last restore from a backup (204 when there was none) */
+    @GetMapping("servers/{id}/restore")
+    public ResponseEntity<RestoreStatus> restoreStatus(@PathVariable String id) {
+        RestoreStatus status = backups.restoreStatus(id);
+        return status == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(status);
     }
 
     // --- server jar ---------------------------------------------------------------------

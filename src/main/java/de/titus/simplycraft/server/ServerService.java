@@ -54,6 +54,7 @@ public class ServerService {
     public List<ServerConfig> list() {
         try (Stream<Path> dirs = Files.list(root)) {
             return dirs
+                    .filter(dir -> ID.matcher(dir.getFileName().toString()).matches())
                     .filter(dir -> Files.isRegularFile(dir.resolve(CONFIG_FILE)))
                     .map(dir -> read(dir.resolve(CONFIG_FILE)))
                     .sorted(Comparator.comparing(ServerConfig::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
@@ -130,6 +131,47 @@ public class ServerService {
     public synchronized void delete(String id) throws IOException {
         get(id);
         FileSystemUtils.deleteRecursively(dir(id));
+    }
+
+    /** Where a backup is unpacked before it replaces the server directory (same file system, ignored by list()) */
+    public Path stagingDir(String id) {
+        dir(id);
+        return root.resolve(".restore-" + id);
+    }
+
+    /**
+     * Replaces the server directory with the unpacked backup in staging. The config of the
+     * backup is kept (with this server's id); backups without one keep the current config.
+     */
+    public synchronized ServerConfig replaceWith(String id, Path staging) throws IOException {
+        ServerConfig previous = get(id);
+        Path dir = dir(id);
+
+        ServerConfig restored = previous;
+        Path restoredConfig = staging.resolve(CONFIG_FILE);
+        if (Files.isRegularFile(restoredConfig)) {
+            try {
+                restored = read(restoredConfig);
+            } catch (RuntimeException e) {
+                restored = previous;
+            }
+        }
+        restored.setId(id);
+        if (restored.getName() == null || restored.getName().isBlank()) restored.setName(previous.getName());
+        if (restored.getCreatedAt() == null) restored.setCreatedAt(previous.getCreatedAt());
+        Files.writeString(restoredConfig, mapper.writeValueAsString(restored), StandardCharsets.UTF_8);
+        Files.createDirectories(staging.resolve("mods"));
+
+        Path old = root.resolve(".replaced-" + id + "-" + System.nanoTime());
+        Files.move(dir, old, StandardCopyOption.ATOMIC_MOVE);
+        try {
+            Files.move(staging, dir, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            Files.move(old, dir, StandardCopyOption.ATOMIC_MOVE);
+            throw e;
+        }
+        FileSystemUtils.deleteRecursively(old);
+        return restored;
     }
 
     public synchronized ServerConfig save(ServerConfig config) {

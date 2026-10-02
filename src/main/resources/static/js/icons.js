@@ -23,6 +23,7 @@ const PATHS = {
     check: 'M5 12l5 5 9-10',
     server: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01',
     external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
+    restore: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 8v4l3 2',
 };
 
 export function icon(name, size = 18) {
