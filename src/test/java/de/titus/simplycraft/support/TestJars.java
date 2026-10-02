@@ -10,13 +10,18 @@ import java.util.zip.ZipOutputStream;
 
 public final class TestJars {
 
+    private static final long FIXED_TIME = 1_700_000_000_000L;
+
     private TestJars() {
     }
 
-    /** A minimal but valid jar (zip) file */
+    /** A minimal but valid jar (zip) file, byte-identical for the same marker */
     public static byte[] jar(String marker) {
         try (var bytes = new ByteArrayOutputStream(); var zip = new ZipOutputStream(bytes)) {
-            zip.putNextEntry(new ZipEntry("META-INF/MANIFEST.MF"));
+            ZipEntry entry = new ZipEntry("META-INF/MANIFEST.MF");
+            // Fixed timestamp: the same marker must always give the same bytes
+            entry.setTime(FIXED_TIME);
+            zip.putNextEntry(entry);
             zip.write(("Manifest-Version: 1.0\nX-Marker: " + marker + "\n").getBytes());
             zip.closeEntry();
             zip.finish();
