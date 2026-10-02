@@ -1,0 +1,21 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: simplycraft-app:latest
+    ports:
+      - "9092:8080"
+      # One port per Minecraft server, add more as needed
+      - "25565-25570:25565-25570"
+    volumes:
+      - ./data:/data
+    environment:
+      # Backups go to Simplyfile (same instance as the CI uploads)
+      SIMPLYCRAFT_SIMPLYFILE_URL: ${SIMPLYFILE_URL:-https://simplyfile.tesche.me}
+      SIMPLYCRAFT_SIMPLYFILE_TOKEN: ${SIMPLYFILE_TOKEN:-}
+      # Required as soon as the console is reachable by others
+      SIMPLYCRAFT_API_TOKEN: ${SIMPLYCRAFT_API_TOKEN:-}
+      # e.g. the synthia-frontend container, comma separated
+      SIMPLYCRAFT_CORS_ALLOWED_ORIGINS: ${SIMPLYCRAFT_CORS_ALLOWED_ORIGINS:-}
+    stop_grace_period: 90s

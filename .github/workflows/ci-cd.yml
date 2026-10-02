@@ -1,0 +1,203 @@
+name: CI/CD
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+env:
+  # Can be overridden with the repository variable SIMPLYFILE_URL
+  SIMPLYFILE_URL: ${{ vars.SIMPLYFILE_URL || 'https://simplyfile.tesche.me' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+          cache: 'maven'
+
+      - name: Build
+        run: mvn compile
+
+      - name: Test
+        run: mvn test
+
+      - name: Collect test summary
+        if: always()
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import glob
+          import os
+          import xml.etree.ElementTree as ET
+
+          totals = {"total": 0, "passed": 0, "skipped": 0, "failed": 0}
+          for result_file in glob.glob("target/surefire-reports/TEST-*.xml"):
+              try:
+                  tree = ET.parse(result_file)
+                  root = tree.getroot()
+                  suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+                  if not suites and root.tag != "testsuite":
+                      suites = [root]
+                  for suite in suites:
+                      tests = int(suite.attrib.get("tests", 0))
+                      failures = int(suite.attrib.get("failures", 0))
+                      errors = int(suite.attrib.get("errors", 0))
+                      skipped = int(suite.attrib.get("skipped", 0))
+                      failed = failures + errors
+                      passed = max(0, tests - failed - skipped)
+                      totals["total"] += tests
+                      totals["failed"] += failed
+                      totals["skipped"] += skipped
+                      totals["passed"] += passed
+              except Exception as e:
+                  print(f"Error parsing {result_file}: {e}")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              for key, value in totals.items():
+                  env_file.write(f"TEST_{key.upper()}={value}\n")
+          PY
+
+      - name: Set test summary defaults
+        if: always()
+        run: |
+          echo "TEST_TOTAL=${TEST_TOTAL:-0}" >> "$GITHUB_ENV"
+          echo "TEST_PASSED=${TEST_PASSED:-0}" >> "$GITHUB_ENV"
+          echo "TEST_SKIPPED=${TEST_SKIPPED:-0}" >> "$GITHUB_ENV"
+          echo "TEST_FAILED=${TEST_FAILED:-0}" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          mvn package -DskipTests
+          mkdir -p artifacts
+          cp target/simplycraft-*.jar artifacts/simplycraft.jar
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simplycraft
+          path: artifacts/simplycraft.jar
+          if-no-files-found: error
+
+      - name: Upload JAR to Simplyfile
+        run: |
+          # Branch names may contain slashes, keep the file name simple
+          branch=$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')
+          filename="simplycraft-${branch}-${GITHUB_SHA:0:7}.jar"
+          base_url="${SIMPLYFILE_URL%/}"
+
+          set +e
+          upload_response=$(curl --fail-with-body --show-error --silent \
+            --retry 3 --retry-all-errors --retry-delay 5 \
+            --max-time 600 \
+            -X POST \
+            -F "file=@artifacts/simplycraft.jar;filename=${filename}" \
+            "${base_url}/file/upload")
+          upload_exit_code=$?
+          set -e
+
+          if [ "$upload_exit_code" -ne 0 ]; then
+            echo "::warning::Upload to ${base_url} failed (curl exit code ${upload_exit_code}): ${upload_response}"
+            echo "UPLOAD_STATUS=failed" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          upload_id=$(printf '%s' "$upload_response" | jq -r '.id // empty' 2>/dev/null || true)
+          echo "UPLOAD_STATUS=success" >> "$GITHUB_ENV"
+          echo "UPLOAD_FILENAME=${filename}" >> "$GITHUB_ENV"
+          if [ -n "$upload_id" ]; then
+            echo "UPLOAD_URL=${base_url}/file/${upload_id}" >> "$GITHUB_ENV"
+            echo "UPLOAD_DOWNLOAD_URL=${base_url}/file/${upload_id}/download" >> "$GITHUB_ENV"
+            echo "### JAR hochgeladen" >> "$GITHUB_STEP_SUMMARY"
+            echo "[${filename}](${base_url}/file/${upload_id}) · [Download](${base_url}/file/${upload_id}/download)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Notify Discord
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -o pipefail
+
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::warning::WEBHOOK_URL secret is not set, skipping the Discord notification."
+            exit 0
+          fi
+
+          if [ "$JOB_STATUS" != "success" ]; then
+            COLOR=15548997
+            TITLE="❌ Simplycraft CI/CD fehlgeschlagen"
+            DESCRIPTION="Mindestens ein CI/CD-Schritt ist fehlgeschlagen. Bitte prüfe die Workflow-Details."
+          elif [ "$UPLOAD_STATUS" = "failed" ]; then
+            COLOR=16766720
+            TITLE="⚠️ Simplycraft JAR-Upload fehlgeschlagen"
+            DESCRIPTION="Build und Tests waren erfolgreich, aber die JAR konnte nicht zu Simplyfile hochgeladen werden."
+          else
+            COLOR=5763719
+            TITLE="✅ Simplycraft CI/CD erfolgreich"
+            DESCRIPTION="Build und Tests wurden erfolgreich abgeschlossen, die JAR wurde zu Simplyfile hochgeladen."
+          fi
+
+          jq -n \
+            --arg title "$TITLE" \
+            --arg description "$DESCRIPTION" \
+            --arg status "${JOB_STATUS^^}" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg commit "${GITHUB_SHA:0:7}" \
+            --arg commit_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg message "${COMMIT_MESSAGE:-Keine Commit-Nachricht}" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson color "$COLOR" \
+            --arg total "${TEST_TOTAL:-0}" \
+            --arg passed "${TEST_PASSED:-0}" \
+            --arg skipped "${TEST_SKIPPED:-0}" \
+            --arg failed "${TEST_FAILED:-0}" \
+            --arg upload_status "${UPLOAD_STATUS:-not-run}" \
+            --arg upload_filename "${UPLOAD_FILENAME:-}" \
+            --arg upload_url "${UPLOAD_URL:-}" \
+            --arg upload_download_url "${UPLOAD_DOWNLOAD_URL:-}" \
+            '{
+              "username": "Simplycraft CI/CD",
+              "embeds": [{
+                "title": $title,
+                "description": $description,
+                "color": $color,
+                "fields": [
+                  {"name": "Status", "value": $status, "inline": true},
+                  {"name": "Branch", "value": ("`" + $branch + "`"), "inline": true},
+                  {"name": "Commit", "value": ("[`" + $commit + "`](" + $commit_url + ")"), "inline": true},
+                  {"name": "Tests gesamt", "value": ("**" + $total + "**"), "inline": true},
+                  {"name": "Bestanden", "value": ("✅ **" + $passed + "**"), "inline": true},
+                  {"name": "Übersprungen", "value": ("⏭️ **" + $skipped + "**"), "inline": true},
+                  {"name": "Fehlgeschlagen", "value": ("❌ **" + $failed + "**"), "inline": true},
+                  {"name": "Commit-Nachricht", "value": $message, "inline": false},
+                  {"name": "JAR-Upload", "value": (
+                    if $upload_status == "success" and $upload_url != "" then ("✅ [" + $upload_filename + "](" + $upload_url + ") · [Download](" + $upload_download_url + ")")
+                    elif $upload_status == "success" then "✅ Hochgeladen (keine Datei-ID erhalten)"
+                    elif $upload_status == "failed" then "⚠️ Fehlgeschlagen (nicht blockierend)"
+                    else "➖ Nicht ausgeführt" end), "inline": false},
+                  {"name": "Workflow", "value": ("[Workflow anzeigen](" + $run_url + ")"), "inline": false}
+                ],
+                "author": {"name": $repository},
+                "footer": {"text": "GitHub Actions"},
+                "url": $run_url,
+                "timestamp": $timestamp
+              }]
+            }' | curl --fail-with-body --show-error --silent \
+              --write-out '\nDiscord webhook HTTP status: %{http_code}\n' \
+              -H "Content-Type: application/json" \
+              --data-binary @- \
+              "$WEBHOOK_URL"

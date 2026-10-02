@@ -1,0 +1,81 @@
+@import url('https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&display=swap');
+@font-face {
+    font-family: '0xPropo-Medium';
+    src: url('Fonts/0xPropo-Medium.ttf') format('truetype');
+}
+
+/* Design tokens shared with Simplyfile (frontendv2) */
+:root {
+
+    --light-background-color: hsl(from var(--accent-color) calc(h + 10) calc(s * 0.15) 98%);
+    --background-color: hsl(from var(--accent-color) calc(h - 10) calc(s * 0.2) 95%);
+    --dark-background-color: hsl(from var(--accent-color) calc(h - 20) calc(s * 0.25) 91%);
+
+    --background-gradient: radial-gradient(circle at 20% 20%, var(--tertiary-accent), var(--light-background-color) 70%);
+
+    --text-color: #1e1e1e;
+    --text-color-muted: #6c6c6c;
+
+    --accent-color: #0070ff;
+    --secondary-accent: hsl(from var(--accent-color) calc(h + 30) s l);
+    --tertiary-accent: hsl(from var(--accent-color) calc(h - 30) s l);
+
+    --border-radius: 10px;
+    --round-border-radius: 25px;
+    --border-color: #e0e0e0;
+    --border-width: 1px;
+    --thick-border-width: 2px;
+
+    --header-font-size: 1.5em;
+    --text-font-size: 1em;
+    --small-text-font-size: 0.8em;
+
+    --header-font: "0xPropo-Medium", sans-serif;
+    --text-font: 'Fragment Mono', sans-serif;
+    
+    --short-animation-duration: 0.2s;
+    --medium-animation-duration: 0.5s;
+    --long-animation-duration: 0.1s;
+
+    @media (prefers-reduced-motion: reduce) {
+        --short-animation-duration: 0s;
+        --medium-animation-duration: 0s;
+        --long-animation-duration: 0s;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        --light-background-color: hsl(from var(--accent-color) calc(h + 10) calc(s * 0.2) 12%);
+        --background-color: hsl(from var(--accent-color) calc(h - 10) calc(s * 0.2) 10%);
+        --dark-background-color: hsl(from var(--accent-color) calc(h - 20) calc(s * 0.2) 7%);
+
+        --text-color: #e1e1e1;
+        --text-color-muted: #8c8c8c;
+
+        --border-color: #373737;
+
+        --header-font-size: 1.5em;
+        --text-font-size: 1em;
+        --small-text-font-size: 0.8em;
+
+        --header-font: "0xPropo-Medium", sans-serif;
+        --text-font: 'Fragment Mono', sans-serif;
+    }
+}
+
+body {
+    background: var(--background-gradient);
+    background-color: var(--light-background-color);
+    background-repeat: no-repeat;
+    color: var(--text-color);
+    margin: 0;
+    letter-spacing: -0.05em;
+    font-family: var(--text-font), sans-serif;
+}
+
+.title {
+    width: fit-content;
+    font-size: var(--header-font-size);
+    font-family: var(--header-font), sans-serif;
+    font-weight: normal;
+    margin: 0;
+}

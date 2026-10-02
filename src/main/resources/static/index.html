@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="/Styles/index.css" rel="stylesheet">
+    <link href="/Styles/Header.css" rel="stylesheet">
+    <link href="/Styles/Modal.css" rel="stylesheet">
+    <link href="/Styles/Popup.css" rel="stylesheet">
+    <link href="/Styles/Simplycraft.css" rel="stylesheet">
+    <script src="/js/app.js" type="module"></script>
+    <title>Serverkonsole</title>
+</head>
+<body>
+<div id="popup-container" aria-live="polite"></div>
+<div id="layout-grid" class="no-players">
+    <header class="header panel">
+        <div class="header-title">
+            <p class="title">Serverkonsole</p>
+            <span id="header-server" class="muted small"></span>
+        </div>
+        <label id="accent-color-picker-container" title="Akzentfarbe">
+            <span class="visually-hidden">Akzentfarbe</span>
+            <input type="color" id="accent-color-picker">
+        </label>
+    </header>
+
+    <nav id="sidebar" class="sidebar panel" aria-label="Menü"></nav>
+    <main id="main" class="main panel"></main>
+    <aside id="players" class="players panel" aria-label="Spieler"></aside>
+</div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+.header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+#accent-color-picker-container {
+    overflow: hidden;
+    border-radius: var(--round-border-radius);
+    border: var(--thick-border-width) solid var(--text-color);
+    width: 2rem;
+    height: 2rem;
+    cursor: pointer;
+    background-color: var(--accent-color);
+
+    input {
+        width: 100%;
+        height: 100%;
+        opacity: 0;
+        cursor: pointer;
+    }
+}
